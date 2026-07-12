@@ -1,11 +1,24 @@
 # ================== CONFIGURATION ==================
-$rconHost       = "192.168.#"           # Your server IP or hostname
-$rconPort       = 25575                 # RCON port from server.properties
-$rconPassword   = "password"            # Your RCON password
-$checkInterval  = 60                    # Seconds between checks
+# Define your servers as an array. Add or remove entries as needed.
+ $servers = @(
+    @{
+        Name     = "server1"     # A friendly name for the logs
+        Host     = "192.168.#"
+        Port     = 25575         # RCON port for server 1
+        Password = "password"
+    },
+    @{
+        Name     = server2"
+        Host     = "192.168.#"   # Can be the same IP if using different ports
+        Port     = 25576         # RCON port for server 2
+        Password = "password"    # Can be the same or different password
+    }
+)
 
-$highPerf       = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
-$powerSave      = "a1841308-3541-4fab-bc81-f71556f20b4a"
+ $checkInterval  = 60            # In seconds
+
+ $highPerf       = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+ $powerSave      = "a1841308-3541-4fab-bc81-f71556f20b4a"
 # ===================================================
 
 function Send-RconCommand {
@@ -66,7 +79,6 @@ function Set-PowerPlan {
 
     try {
         powercfg /setactive $guid | Out-Null
-        Write-Host "Power plan switched to: $guid" -ForegroundColor Cyan
     }
     catch {
         Write-Host "Failed to set power plan: $_" -ForegroundColor Red
@@ -74,36 +86,55 @@ function Set-PowerPlan {
 }
 
 # ================== MAIN LOOP ==================
-Write-Host "Starting Minecraft RCON Power Plan Monitor..." -ForegroundColor Green
-Write-Host "Checking every $checkInterval seconds.`n"
+Write-Host "Starting Multi-Server Minecraft RCON Power Plan Monitor..." -ForegroundColor Green
+Write-Host "Monitoring $($servers.Count) servers every $checkInterval seconds.`n"
 
 while ($true) {
+    
+    $anyPlayersOnline = $false
 
-    $response = Send-RconCommand -rconHost $rconHost -rconPort $rconPort -rconPassword $rconPassword -command "list"
+    foreach ($srv in $servers) {
+        $response = Send-RconCommand -rconHost $srv.Host -rconPort $srv.Port -rconPassword $srv.Password -command "list"
 
-    if ($null -eq $response) {
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Server is OFFLINE or unreachable" -ForegroundColor Yellow
-        Write-Host "Switching to Power Saver plan" -ForegroundColor Gray
-        Set-PowerPlan -guid $powerSave
-    }
-    elseif ($response -match "There are (\d+) of a max") {
-        $online = [int]$Matches[1]
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Players online: $online" -ForegroundColor Green
-
-        if ($online -gt 0) {
-            Write-Host "Switching to High Performance" -ForegroundColor Cyan
-            Set-PowerPlan -guid $highPerf
+        # CHECK 1: Did it fail to connect entirely?
+        if ($null -eq $response) {
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [$($srv.Name)] Server is OFFLINE or unreachable" -ForegroundColor Yellow
         }
+        # CHECK 2: Did it connect but get a blank response? (Usually wrong password)
+        elseif ([string]::IsNullOrWhiteSpace($response)) {
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [$($srv.Name)] EMPTY RESPONSE: RCON Password is likely wrong." -ForegroundColor Red
+        }
+        # CHECK 3: Does the response contain a number? (Works with Vanilla, BungeeCord, and most plugins)
+        elseif ($response -match "(\d+)") {
+            
+            # Grabs the FIRST number found in the response. 
+            $online = [int]$Matches[1]
+
+            if ($online -gt 0) {
+                Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [$($srv.Name)] Players online: $online" -ForegroundColor Green
+                $anyPlayersOnline = $true
+            }
+            else {
+                Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [$($srv.Name)] Players online: 0" -ForegroundColor DarkGray
+            }
+        }
+        # CHECK 4: Fallback if it connects, gets text, but no numbers are found
         else {
-            Write-Host "No players online → Switching to Power Saver" -ForegroundColor Gray
-            Set-PowerPlan -guid $powerSave
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [$($srv.Name)] Unexpected response from server" -ForegroundColor Magenta
+            Write-Host "Response text: $response" -ForegroundColor DarkGray
         }
+    }
+
+    # AFTER checking all servers, make the power decision
+    if ($anyPlayersOnline) {
+        Write-Host ">> Action: Players detected on at least one server. Switching to High Performance" -ForegroundColor Cyan
+        Set-PowerPlan -guid $highPerf
     }
     else {
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Unexpected response from server" -ForegroundColor Magenta
-        Write-Host "Response: $response" -ForegroundColor DarkGray
+        Write-Host ">> Action: No players on ANY server. Switching to Power Saver" -ForegroundColor Gray
         Set-PowerPlan -guid $powerSave
     }
 
+    Write-Host "---------------------------------------------------"
     Start-Sleep -Seconds $checkInterval
 }
